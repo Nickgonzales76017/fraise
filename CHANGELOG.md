@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-beta.8](https://github.com/RonsenbergVI/fraise/compare/v0.1.0-beta.7...v0.1.0-beta.8) (2026-08-20)
+
+
+### Performance
+
+* read one node's neighbourhood without cloning ([#198](https://github.com/RonsenbergVI/fraise/issues/198)) ([3dc4ddd](https://github.com/RonsenbergVI/fraise/commit/3dc4ddd3b4cef4908e6b150d1beb08cf55c48f71))
+
 ## [0.1.0-beta.7](https://github.com/RonsenbergVI/fraise/compare/v0.1.0-beta.6...v0.1.0-beta.7) (2026-08-15)
 
 
