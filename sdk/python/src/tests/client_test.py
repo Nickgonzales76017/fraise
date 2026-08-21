@@ -32,6 +32,7 @@ from fraise_sdk import FraiseAPIError, FraiseClient, FraiseError, FraiseWarning
 from fraise_sdk.client import DEFAULT_BASE_URL, DEFAULT_TIMEOUT_SECONDS
 
 QUERY_URL = f"{DEFAULT_BASE_URL}/api/v1/q"
+EXPLAIN_URL = f"{DEFAULT_BASE_URL}/api/v1/explain"
 NO_HITS = {"results": {"count": 0, "hits": []}}
 
 # The shape the server sends for the grammar's one surviving ambiguity: a
@@ -310,3 +311,34 @@ def test_embedder_object_is_called_through_its_embed_method(session):
     assert _sent(session)["parameters"] == {"v": [1.0, 2.0, 3.0]}
     embedder.embed.assert_called_once_with("hello world")
     embedder.assert_not_called()
+
+def test_typed_explain_posts_to_explain_endpoint(session):
+    _respond(
+        session,
+        {
+            "results": {
+                "count": 1,
+                "background": 0.125,
+                "hits": [
+                    {
+                        "value": "deploys require two approvals",
+                        "score": 0.75,
+                        "source": "github:policy/17",
+                        "contributions": [
+                            {"source": "text", "score": 1, "rank": 0, "count": 1}
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+    result = FraiseClient().explain("deploys", "approvals", graph=2)
+
+    session.post.assert_called_once_with(
+        EXPLAIN_URL,
+        json={"query": "recall@2 deploys approvals"},
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+    assert result.hits[0].source == "github:policy/17"
+    assert result.hits[0].contributions[0].source == "text"
+    assert result.background == 0.125

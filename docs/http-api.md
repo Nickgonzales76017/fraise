@@ -59,24 +59,33 @@ by `top:` and by `default-top`. A write returns 200 with an empty result set.
 
 ## `POST /api/v1/explain` — explained recall
 
-The same request body and pipeline as `/q`, for recalls only: each hit also
-carries `contributions`, the per-source sightings its score was folded from.
-Use it to see *why* a fact ranked where it did; use `/q` when the ranking is
-all you need — the breakdown costs response tokens, which is why it lives on
-its own endpoint instead of every recall.
+The same request body and ranking pipeline as `/q`, for recalls only. Explain is
+request-local and is selected after planning, so asking for evidence does not
+change the plan-cache identity. Each hit may add two forms of evidence:
+
+- `source`: the provenance reference stored by `remember ... source:'...'`;
+- `contributions`: deterministic observations from `text`, `vector`, or `graph`
+  that produced the ranking.
+
+The query-level `background` field is included when graph surplus contributes.
+A graph contribution can include `via` (the funding topic/entity), `degree`, and
+`count`; the current wire format does **not** use the old hop field.
 
 ```json
 {
   "results": {
     "count": 1,
+    "background": 0.125,
     "hits": [
       {
-        "value": "the parrot is turquoise",
-        "timestamp": "2026-08-09T17:40:53.851+01:00",
+        "value": "deploys require two approvals",
+        "timestamp": "2026-08-21T01:40:00Z",
         "score": 0.75,
+        "source": "github:policy/17",
         "contributions": [
-          { "source": "text",  "score": 1, "rank": 0, "hop": 0 },
-          { "source": "graph", "score": 2, "rank": 1, "hop": 2 }
+          {"source": "text", "score": 1, "rank": 0, "count": 1},
+          {"source": "graph", "score": 2, "rank": 1, "count": 2,
+           "via": "deploy-policy", "degree": 3}
         ]
       }
     ]
@@ -84,21 +93,13 @@ its own endpoint instead of every recall.
 }
 ```
 
-One contribution records one sighting of the hit by one retrieval source:
+`score` is a deterministic ranking score, **not a calibrated probability**.
+Consumers that need confidence should inspect the provenance and contribution
+structure, compare competing hits, and apply their own decision threshold.
+Ordinary `/q` deliberately omits `source`, `contributions`, and `background` so
+routine agent recalls keep their small response shape.
 
-| Field    | Meaning                                                            |
-|----------|--------------------------------------------------------------------|
-| `source` | which stage saw it: `text`, `vector` or `graph`                    |
-| `score`  | the source's raw magnitude: match count, similarity, or seed score |
-| `rank`   | the hit's position in that source's own result list, 0 first       |
-| `hop`    | 0 for a seed; how many hops from its seed for a graph sighting     |
-
-`score` on the hit remains the final fused value (after recency decay and any
-ranking boost), so the contributions explain its ingredients rather than
-summing to it exactly.
-
-A `remember` on this endpoint is rejected with 400: a write has no ranking to
-explain, and explaining must never mutate a graph.
+A `remember` on this endpoint is rejected with 400: explanation is read-only.
 
 ## `GET /api/v1/stats` — per-graph snapshot
 

@@ -263,6 +263,48 @@ class FraiseClient:
         results = body.get("results") or {}
         return RecallResult.from_json(results, warnings=body.get("warnings"))
 
+
+    def explain(
+        self,
+        *keywords: str,
+        graph: int = 0,
+        query: str | None = None,
+        topics: Sequence[str] | None = None,
+        entities: Sequence[str] | None = None,
+        top: int | None = None,
+        depth: int | None = None,
+        vector: Sequence[float] | None = None,
+        embed: bool | None = None,
+        timeout: float | None = None,
+    ) -> RecallResult:
+        """Run a recall through ``/api/v1/explain`` and return typed evidence.
+
+        The ranking plan is identical to :meth:`recall`; the server attaches
+        provenance and deterministic contribution records only to this request.
+        ``score`` remains a ranking score, not a calibrated probability.
+        """
+        embed_text = query if query is not None else " ".join(keywords)
+        resolved = self._resolve_vector(vector, embed_text, embed)
+        text = _query.build_recall(
+            keywords=list(keywords),
+            graph=graph,
+            query=query,
+            topics=topics,
+            entities=entities,
+            top=top,
+            depth=depth,
+            with_vector=resolved is not None,
+        )
+        parameters = {_query.VECTOR_PARAM: resolved} if resolved is not None else None
+        body = self.query(
+            text,
+            parameters=parameters,
+            timeout=timeout,
+            _endpoint="explain",
+        )
+        results = body.get("results") or {}
+        return RecallResult.from_json(results, warnings=body.get("warnings"))
+
     # -- embedding ---------------------------------------------------------
 
     def _resolve_vector(
@@ -299,6 +341,7 @@ class FraiseClient:
         *,
         parameters: dict[str, list[float]] | None = None,
         timeout: float | None = None,
+        _endpoint: str = "q",
     ) -> dict:
         """Send a raw query string and return the decoded JSON body.
 
@@ -322,7 +365,7 @@ class FraiseClient:
         effective_timeout = self.timeout if timeout is None else timeout
         try:
             response = self._session.post(
-                f"{self.base_url}/api/v1/q",
+                f"{self.base_url}/api/v1/{_endpoint}",
                 json=payload,
                 timeout=effective_timeout,
             )
