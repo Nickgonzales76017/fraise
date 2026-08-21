@@ -105,6 +105,7 @@ func (s *Stream[K, P]) Commit(g graph.Graph[K, P]) error {
 			NodeAttributes: graph.NodeAttributes{
 				Value:     remember.Value,
 				Timestamp: time.Now(),
+				Source:    remember.Source,
 			},
 			Hasher: g.GetHasher(),
 		}

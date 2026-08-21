@@ -104,16 +104,22 @@ type HitContribution[P float32 | float64] struct {
 // existed.
 func (h Hit[K, P]) MarshalJSON() ([]byte, error) {
 	node := *h.Node
+	source := ""
+	if h.Contributions != nil {
+		source = node.GetAttributes().Source
+	}
 
 	return json.Marshal(struct {
 		Value         string               `json:"value"`
 		Timestamp     time.Time            `json:"timestamp"`
 		Score         P                    `json:"score"`
+		Source        string               `json:"source,omitempty"`
 		Contributions []HitContribution[P] `json:"contributions,omitempty"`
 	}{
 		Value:         node.GetValue(),
 		Timestamp:     node.GetTimestamp(),
 		Score:         h.Score,
+		Source:        source,
 		Contributions: h.Contributions,
 	})
 }
@@ -157,6 +163,7 @@ func Parse[K comparable, P float32 | float64](q string, params map[string][]P, c
 			Value:    n.Value(),
 			Entities: n.Entities(),
 			Topics:   n.Topics(),
+			Source:   n.Source(),
 		}
 		qo.SetGraphID(n.Selector())
 

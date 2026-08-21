@@ -454,7 +454,7 @@ func (n AnchorFieldNode) String() string {
 	if n.clause != nil {
 		c = n.clause.value.Literal
 	}
-	return fmt.Sprintf("%s%s%s:%s", c, n.token.Literal, n.field.Key(), n.field.Value())
+	return fmt.Sprintf("%s%s%s", c, n.token.Literal, n.field.String())
 }
 
 func (n AnchorFieldNode) Pos() lexer.Position {

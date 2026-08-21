@@ -29,12 +29,36 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class Contribution:
+    # One deterministic scoring observation in an explained recall.
+    source: str
+    score: float
+    rank: int
+    count: int
+    via: str | None = None
+    degree: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict) -> "Contribution":
+        return cls(
+            source=data["source"],
+            score=float(data["score"]),
+            rank=int(data.get("rank", 0)),
+            count=int(data.get("count", 0)),
+            via=data.get("via"),
+            degree=int(data["degree"]) if data.get("degree") is not None else None,
+        )
+
+
+@dataclass(frozen=True)
 class Hit:
     """One recalled fact and how strongly it matched the query."""
 
     value: str
     score: float
     timestamp: str | None = None
+    source: str | None = None
+    contributions: list[Contribution] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: dict) -> Hit:  # noqa: D102
@@ -42,6 +66,8 @@ class Hit:
             value=data["value"],
             score=float(data["score"]),
             timestamp=data.get("timestamp"),
+            source=data.get("source"),
+            contributions=[Contribution.from_json(c) for c in data.get("contributions") or []],
         )
 
 
@@ -58,6 +84,7 @@ class RecallResult:
     count: int
     hits: list[Hit]
     warnings: list[str] = field(default_factory=list)
+    background: float | None = None
 
     @classmethod
     def from_json(
@@ -82,6 +109,7 @@ class RecallResult:
             count=results.get("count", len(hits)),
             hits=hits,
             warnings=list(warnings or []),
+            background=float(results["background"]) if results.get("background") is not None else None,
         )
 
     def __bool__(self) -> bool:

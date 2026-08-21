@@ -181,6 +181,7 @@ class FraiseClient:
         graph: int = 0,
         topics: Sequence[str] | None = None,
         entities: Sequence[str] | None = None,
+        source: str | None = None,
         vector: Sequence[float] | None = None,
         embed: bool | None = None,
         timeout: float | None = None,
@@ -206,6 +207,7 @@ class FraiseClient:
             graph=graph,
             topics=topics,
             entities=entities,
+            source=source,
             with_vector=resolved is not None,
         )
         parameters = {_query.VECTOR_PARAM: resolved} if resolved is not None else None

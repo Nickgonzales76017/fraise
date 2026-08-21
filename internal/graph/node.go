@@ -31,6 +31,7 @@ import (
 type NodeAttributes struct {
 	Value     string
 	Timestamp time.Time
+	Source    string
 }
 
 // Node is anything the graph stores under a key: the entities (facts, topics,
