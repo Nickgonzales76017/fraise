@@ -26,7 +26,8 @@ These are pure functions with no I/O, so they are the natural unit-test seam:
 the wire format lives here, and :mod:`fraise_sdk.client` only concerns itself
 with transport. The grammar they target:
 
-    remember@<graph> '<value>' [topic:<t>]... [entity:<e>]... [vec:$<name>]
+    remember@<graph> '<value>' [topic:<t>]... [entity:<e>]...
+                     [source:'<ref>'] [vec:$<name>]
     recall@<graph> <keyword>... [topic:<t>]... [entity:<e>]...
                    [top:<n>] [depth:<n>] [vec:$<name>]
 
@@ -106,13 +107,30 @@ def build_remember(
 ) -> str:
     """Build a ``remember`` query string that stores ``value`` in ``graph``.
 
+    ``source`` records where the fact came from — a document, a session, a tool
+    call — and is quoted rather than emitted as a bare token, because a
+    reference legitimately contains the whitespace, colons and slashes the bare
+    grammar reserves. Pass a *reference* to the origin, not the origin itself:
+    the server bounds its length, and a reference is what keeps a tool payload
+    (and whatever credential it carried) out of the graph.
+
     Set ``with_vector`` when a vector is being sent in the request parameters, so
     the ``vec:$v`` placeholder is appended for the server to bind.
+
+    Raises:
+        FraiseQueryError: if query is not valid
     """
     parts = [f"remember{_selector(graph)}", _quote_value(value)]
     parts += _clauses("topic", topics)
     parts += _clauses("entity", entities)
     if source is not None:
+        # An empty source is a caller error, not an absent one: the server
+        # rejects `source:''` for the same reason, and catching it here names
+        # the mistake without a round trip.
+        if not source.strip():
+            raise FraiseQueryError(
+                "source must not be empty: omit it if the fact has no recorded origin"
+            )
         parts.append(f"source:{_quote_value(source)}")
     if with_vector:
         parts.append(f"vec:${VECTOR_PARAM}")

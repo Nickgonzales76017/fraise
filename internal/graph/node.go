@@ -31,7 +31,6 @@ import (
 type NodeAttributes struct {
 	Value     string
 	Timestamp time.Time
-	Source    string
 }
 
 // Node is anything the graph stores under a key: the entities (facts, topics,
@@ -52,6 +51,16 @@ type Node[K comparable] interface {
 	GetValue() string
 	GetTimestamp() time.Time
 	GetAttributes() *NodeAttributes
+}
+
+// Sourced is the optional interface a node implements when it carries
+// provenance: where the thing it holds came from. Only facts do — a topic or a
+// named entity is an anchor the graph derives, with no origin of its own — so
+// this is deliberately not part of Node. The read path type-asserts for it,
+// which keeps a node type that has no provenance from having to answer for
+// one.
+type Sourced interface {
+	GetSource() string
 }
 
 type Entity[K comparable] interface {

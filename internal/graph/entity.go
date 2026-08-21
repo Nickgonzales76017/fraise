@@ -30,6 +30,19 @@ import (
 
 type Fact[K comparable] struct {
 	NodeAttributes
+
+	// Source is the fact's provenance: a bounded reference to where it came
+	// from (a document, a session, a tool call), or empty for a fact recorded
+	// without one. It sits on Fact rather than on NodeAttributes because only
+	// a fact has an origin — a topic or an entity is an anchor this graph
+	// derived, not something it was told.
+	//
+	// It is an attribute, never identity: see Hash. A fact is content-
+	// addressed by its text, so two remembers of the same sentence from two
+	// origins are one node, and the later write refreshes the provenance the
+	// same way it refreshes the timestamp and the vector.
+	Source string
+
 	Hasher hash.Hasher[K, string] `json:"-"`
 }
 
@@ -49,8 +62,21 @@ func (f Fact[K]) GetAttributes() *NodeAttributes {
 	return &f.NodeAttributes
 }
 
+// GetSource returns the fact's provenance reference, satisfying Sourced.
+func (f Fact[K]) GetSource() string {
+	return f.Source
+}
+
 // Hash keys the fact by its text in the fact namespace, so a topic or entity
 // reading the same text is a different node (see Node).
+//
+// Source is deliberately absent. Provenance is what the graph knows *about* a
+// fact, not part of which fact it is: folding it in would make 'acme moved to
+// annual billing' remembered from a contract and from a call two separate
+// nodes, splitting one memory in two and doubling every anchor that funds it.
+// Remember.Hash does fold Source in — that is the plan cache, which must not
+// reuse one origin's write plan for another's — and the two hashes answer
+// different questions on purpose.
 func (f Fact[K]) Hash(h hash.Hasher[K, string]) K {
 	return h.Hash("fact:" + f.Value)
 }

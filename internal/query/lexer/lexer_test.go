@@ -152,6 +152,7 @@ func Test_AllKeyLITERALs(t *testing.T) {
 		{"until", lexer.UNTIL},
 		{"top", lexer.TOP},
 		{"depth", lexer.DEPTH},
+		{"source", lexer.SOURCE},
 		{"vec", lexer.VEC},
 	}
 

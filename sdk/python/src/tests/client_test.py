@@ -95,6 +95,7 @@ def _callable_embedder() -> MagicMock:
 
 
 def test_remember_posts_expected_query(session):
+    """Remember posts the built query to the stable query endpoint."""
     FraiseClient().remember("the parrot is turquoise", graph=3, topics=["color"])
     session.post.assert_called_once_with(
         QUERY_URL,
@@ -104,6 +105,7 @@ def test_remember_posts_expected_query(session):
 
 
 def test_remember_with_vector_sends_parameters(session):
+    """Remember sends vector data under the fixed parameter name."""
     FraiseClient().remember("kingfisher is blue", graph=6, vector=[0.5, 0.5])
     assert _sent(session) == {
         "query": "remember@6 'kingfisher is blue' vec:$v",
@@ -112,6 +114,7 @@ def test_remember_with_vector_sends_parameters(session):
 
 
 def test_recall_parses_hits(session):
+    """Recall turns the server hit envelope into typed result objects."""
     _respond(
         session,
         {
@@ -142,6 +145,7 @@ def test_recall_parses_hits(session):
 
 
 def test_recall_empty_results(session):
+    """An empty result envelope remains a falsey typed result."""
     result = FraiseClient().recall("nothingindexed")
     assert result.count == 0
     assert list(result) == []
@@ -203,6 +207,7 @@ def test_raw_query_emits_server_warnings(session):
 
 
 def test_api_error_surfaces_server_message(session):
+    """A server error becomes FraiseAPIError with its safe message."""
     _respond(session, {"error": "could not parse query"}, status_code=400)
     with pytest.raises(FraiseAPIError) as excinfo:
         FraiseClient().recall("bogus")
@@ -211,6 +216,7 @@ def test_api_error_surfaces_server_message(session):
 
 
 def test_unreachable_server_raises_fraise_error(session):
+    """Transport failures surface as FraiseError rather than requests errors."""
     session.post.side_effect = requests.ConnectionError("refused")
     with pytest.raises(FraiseError, match="could not reach fraise"):
         FraiseClient().recall("anything")
@@ -229,12 +235,14 @@ def test_timed_out_server_raises_a_distinct_fraise_error(session):
 
 
 def test_closing_closes_the_session_the_client_owns(session):
+    """A client closes the HTTP session it constructed itself."""
     with FraiseClient():
         pass
     session.close.assert_called_once_with()
 
 
 def test_an_injected_session_is_left_open():
+    """A caller-owned HTTP session remains open after client close."""
     # The caller owns what the caller passed in; closing it would be rude.
     injected = MagicMock()
     _respond(injected, NO_HITS)
@@ -247,6 +255,7 @@ def test_an_injected_session_is_left_open():
 
 
 def test_configured_embedder_encodes_remember_value(session):
+    """A configured embedder supplies remember's implicit vector."""
     embedder = _callable_embedder()
     FraiseClient(embedder=embedder).remember("the parrot is turquoise", graph=6)
     assert _sent(session) == {
@@ -257,6 +266,7 @@ def test_configured_embedder_encodes_remember_value(session):
 
 
 def test_configured_embedder_encodes_recall_keywords(session):
+    """Recall embeds joined keywords when no query phrase is present."""
     embedder = _callable_embedder()
     FraiseClient(embedder=embedder).recall("kingfisher", "blue", graph=6)
     assert _sent(session)["query"] == "recall@6 kingfisher blue vec:$v"
@@ -265,6 +275,7 @@ def test_configured_embedder_encodes_recall_keywords(session):
 
 
 def test_recall_query_phrase_overrides_keywords_for_embedding(session):
+    """A whole query phrase is the embedding input when supplied."""
     embedder = _callable_embedder()
     FraiseClient(embedder=embedder).recall(
         "zzznomatch", graph=6, query="a sleepy kitten in the sun"
@@ -279,6 +290,7 @@ def test_recall_query_phrase_overrides_keywords_for_embedding(session):
 
 
 def test_explicit_vector_wins_over_embedder(session):
+    """An explicit vector bypasses the configured embedder."""
     embedder = _callable_embedder()
     FraiseClient(embedder=embedder).remember("x is y", graph=6, vector=[0.1, 0.2])
     assert _sent(session)["parameters"] == {"v": [0.1, 0.2]}
@@ -286,6 +298,7 @@ def test_explicit_vector_wins_over_embedder(session):
 
 
 def test_embed_false_skips_a_configured_embedder(session):
+    """Per-call embed=False suppresses implicit vector generation."""
     embedder = _callable_embedder()
     FraiseClient(embedder=embedder).remember("x is y", graph=6, embed=False)
     assert "parameters" not in _sent(session)
@@ -293,16 +306,19 @@ def test_embed_false_skips_a_configured_embedder(session):
 
 
 def test_embed_true_without_embedder_raises(session):
+    """Per-call embed=True requires an available embedder."""
     with pytest.raises(FraiseError, match="no embedder"):
         FraiseClient().remember("x is y", embed=True)
 
 
 def test_no_embedder_sends_no_vector(session):
+    """A client without an embedder leaves vector parameters absent."""
     FraiseClient().remember("x is y", graph=6)
     assert "parameters" not in _sent(session)
 
 
 def test_embedder_object_is_called_through_its_embed_method(session):
+    """Embedder objects use their named method instead of recursive call."""
     # An Embedder exposes both .embed and __call__; the client must take the
     # named method, or __call__ would recurse straight back into it.
     embedder = MagicMock()
@@ -312,13 +328,16 @@ def test_embedder_object_is_called_through_its_embed_method(session):
     embedder.embed.assert_called_once_with("hello world")
     embedder.assert_not_called()
 
+
 def test_typed_explain_posts_to_explain_endpoint(session):
+    """Opting into explain routes one recall and parses its versioned evidence."""
     _respond(
         session,
         {
             "results": {
                 "count": 1,
                 "background": 0.125,
+                "explain_version": "unstable-1",
                 "hits": [
                     {
                         "value": "deploys require two approvals",
@@ -332,7 +351,7 @@ def test_typed_explain_posts_to_explain_endpoint(session):
             }
         },
     )
-    result = FraiseClient().explain("deploys", "approvals", graph=2)
+    result = FraiseClient().recall("deploys", "approvals", graph=2, explain=True)
 
     session.post.assert_called_once_with(
         EXPLAIN_URL,
@@ -340,5 +359,26 @@ def test_typed_explain_posts_to_explain_endpoint(session):
         timeout=DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.hits[0].source == "github:policy/17"
-    assert result.hits[0].contributions[0].source == "text"
+    assert result.hits[0].contributions is not None
+    assert result.hits[0].contributions[0].channel == "text"
     assert result.background == 0.125
+    assert result.explain_version == "unstable-1"
+
+
+def test_remember_sends_the_source_reference(session):
+    """The typed client forwards a source reference without changing the fact."""
+    FraiseClient().remember(
+        "deploys require two approvals",
+        graph=2,
+        source="github:policy/17",
+    )
+
+    session.post.assert_called_once_with(
+        QUERY_URL,
+        json={
+            "query": (
+                "remember@2 'deploys require two approvals' source:'github:policy/17'"
+            )
+        },
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )

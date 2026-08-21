@@ -28,6 +28,7 @@ from fraise_sdk.query import VECTOR_PARAM, build_recall, build_remember
 
 
 def test_remember_minimal():
+    """A minimal remember contains only its default graph and quoted fact."""
     assert (
         build_remember("the parrot is turquoise")
         == "remember@0 'the parrot is turquoise'"
@@ -35,6 +36,7 @@ def test_remember_minimal():
 
 
 def test_remember_with_graph_topics_and_entities():
+    """Remember preserves the selected graph and ordered anchors."""
     got = build_remember(
         "anne loves the color orange",
         graph=3,
@@ -45,8 +47,23 @@ def test_remember_with_graph_topics_and_entities():
 
 
 def test_remember_with_vector_appends_placeholder():
+    """Vector remembers append only the out-of-band placeholder."""
     got = build_remember("the parrot is turquoise", graph=6, with_vector=True)
     assert got == f"remember@6 'the parrot is turquoise' vec:${VECTOR_PARAM}"
+
+
+def test_remember_quotes_source_reference():
+    """A source reference retains punctuation and escapes apostrophes."""
+    assert (
+        build_remember("fact", graph=2, source="Tool Call / Nick's session")
+        == "remember@2 'fact' source:'Tool Call / Nick''s session'"
+    )
+
+
+def test_remember_rejects_an_empty_source_reference():
+    """An empty origin is rejected instead of masquerading as provenance."""
+    with pytest.raises(FraiseQueryError, match="source must not be empty"):
+        build_remember("fact", source="   ")
 
 
 def test_remember_escapes_apostrophes():
@@ -55,6 +72,7 @@ def test_remember_escapes_apostrophes():
 
 
 def test_remember_rejects_empty_value():
+    """A whitespace-only fact cannot become an empty memory."""
     with pytest.raises(FraiseQueryError):
         build_remember("   ")
 
@@ -92,30 +110,36 @@ def test_recall_query_phrase_escapes_apostrophes():
 
 
 def test_recall_with_keywords_and_clauses():
+    """Recall preserves keyword order and explicit ranking bounds."""
     got = build_recall(["anna", "bob"], graph=2, top=10, depth=5)
     assert got == "recall@2 anna bob top:10 depth:5"
 
 
 def test_recall_with_vector_only():
+    """A vector placeholder alone is a sufficient recall seed."""
     assert build_recall(graph=6, with_vector=True) == f"recall@6 vec:${VECTOR_PARAM}"
 
 
 def test_recall_topic_seed_is_enough():
+    """A topic clause alone is a sufficient recall seed."""
     assert build_recall(topics=["birds"]) == "recall@0 topic:birds"
 
 
 def test_recall_requires_a_seed():
+    """Recall rejects a request with no text, vector, or anchor seed."""
     with pytest.raises(FraiseQueryError, match="at least one seed"):
         build_recall(graph=1)
 
 
 def test_recall_rejects_whitespace_in_keyword():
+    """Bare keyword whitespace is rejected before grammar splitting."""
     with pytest.raises(FraiseQueryError, match="whitespace"):
         build_recall(["two words"])
 
 
 @pytest.mark.parametrize("bad", [0, -1])
 def test_recall_rejects_non_positive_top_and_depth(bad):
+    """Result and traversal bounds must both remain positive."""
     with pytest.raises(FraiseQueryError):
         build_recall(["x"], top=bad)
     with pytest.raises(FraiseQueryError):
@@ -123,5 +147,6 @@ def test_recall_rejects_non_positive_top_and_depth(bad):
 
 
 def test_negative_graph_is_rejected():
+    """Graph selectors cannot wrap negative values into another graph."""
     with pytest.raises(FraiseQueryError, match="non-negative"):
         build_remember("x", graph=-1)

@@ -197,16 +197,19 @@ def test_explain_rejects_unparsable_queries(explain, bad_query):
     assert status == 400
     assert "error" in body
 
-def test_explain_returns_remembered_provenance_but_plain_query_stays_lean(query, explain):
+
+def test_explain_returns_remembered_provenance_but_plain_query_stays_lean(
+    query, explain
+):
+    """Only explained recall returns provenance and its explicit wire version."""
     phrase = "traceability probe remembers its origin"
     source = "agent-session:proof-17/tool-call:4"
-    status, body = query(
-        f"remember@2 '{phrase}' topic:traceability source:'{source}'"
-    )
+    status, body = query(f"remember@2 '{phrase}' topic:traceability source:'{source}'")
     assert status == 200, body.get("error")
 
     status, body = explain("recall@2 traceability")
     assert status == 200, body.get("error")
+    assert body["results"]["explain_version"] == "unstable-1"
     hit = next(h for h in body["results"]["hits"] if h["value"] == phrase)
     assert hit["source"] == source
     assert hit["contributions"], "explained provenance still carries scoring evidence"
@@ -216,3 +219,4 @@ def test_explain_returns_remembered_provenance_but_plain_query_stays_lean(query,
     plain = next(h for h in body["results"]["hits"] if h["value"] == phrase)
     assert "source" not in plain
     assert "contributions" not in plain
+    assert "explain_version" not in body["results"]

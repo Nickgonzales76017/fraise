@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,7 @@ func TestParseRejectsOverLimits(t *testing.T) {
 	cfg.DB.MaxTop = 10
 	cfg.DB.MaxDepth = 2
 	cfg.DB.MaxVectorDimension = 3
+	cfg.DB.MaxSourceLength = 10
 
 	cases := []struct {
 		name   string
@@ -181,6 +183,7 @@ func TestParseRejectsOverLimits(t *testing.T) {
 		{"depth over ceiling", "recall@0 anna depth:9", nil},
 		{"recall vector too long", "recall@0 anna vec:$v", map[string][]float32{"v": {1, 2, 3, 4}}},
 		{"remember vector too long", "remember@0 'a fact' vec:$v", map[string][]float32{"v": {1, 2, 3, 4}}},
+		{"remember source too long", "remember@0 'a fact' source:'" + strings.Repeat("x", 11) + "'", nil},
 	}
 
 	for _, tc := range cases {
@@ -198,6 +201,9 @@ func TestParseRejectsOverLimits(t *testing.T) {
 	// A request within every ceiling still parses cleanly.
 	if _, _, err := query.Parse[string, float32]("recall@0 anna top:5 depth:1", nil, cfg); err != nil {
 		t.Errorf("within-limit recall returned error: %v", err)
+	}
+	if _, _, err := query.Parse[string, float32]("remember@0 'a fact' source:'doc://ok'", nil, cfg); err != nil {
+		t.Errorf("within-limit remember returned error: %v", err)
 	}
 }
 
@@ -248,5 +254,115 @@ func TestHitMarshalSerializesContributions(t *testing.T) {
 		`{"source":"graph","score":2,"rank":0,"via":"weather","degree":3,"count":2}]}`
 	if got != want {
 		t.Errorf("Marshal(Hit) = %s, want %s", got, want)
+	}
+}
+
+// TestParseRememberBindsSource checks the provenance clause reaches the
+// executable query: the parser records it, Parse copies it onto the Remember,
+// and the fact's other fields are untouched by its presence.
+func TestParseRememberBindsSource(t *testing.T) {
+	const q = "remember@1 'acme moved to annual billing' topic:billing source:'doc://contracts/Acme-2026.pdf#p4'"
+
+	got, _, err := query.Parse[string, float32](q, nil, config.New())
+	if err != nil {
+		t.Fatalf("Parse(%q) err = %v, want nil", q, err)
+	}
+	r, ok := got.(*query.Remember[string, float32])
+	if !ok {
+		t.Fatalf("Parse(%q) = %T, want *query.Remember", q, got)
+	}
+
+	if want := "doc://contracts/Acme-2026.pdf#p4"; r.Source != want {
+		t.Errorf("Source = %q, want %q", r.Source, want)
+	}
+	if want := "acme moved to annual billing"; r.Value != want {
+		t.Errorf("Value = %q, want %q", r.Value, want)
+	}
+	if want := []string{"billing"}; !reflect.DeepEqual(r.Topics, want) {
+		t.Errorf("Topics = %v, want %v", r.Topics, want)
+	}
+
+	// A remember without the clause carries no provenance — not an empty one
+	// invented on the way through.
+	bare, _, err := query.Parse[string, float32]("remember@1 'acme moved to annual billing'", nil, config.New())
+	if err != nil {
+		t.Fatalf("Parse of unsourced remember err = %v, want nil", err)
+	}
+	if src := bare.(*query.Remember[string, float32]).Source; src != "" {
+		t.Errorf("unsourced remember got Source = %q, want empty", src)
+	}
+}
+
+// TestSourceCeilingBoundsProvenanceToAReference is the privacy fence stated as
+// a limit rather than as advice. A source is meant to be a reference to an
+// origin; nothing in the grammar stops a caller pasting the origin itself —
+// a whole tool payload, with whatever credential it happened to carry —
+// except this ceiling, which rejects it at parse time, before any of it is
+// written to a graph, a log line or an explain payload.
+func TestSourceCeilingBoundsProvenanceToAReference(t *testing.T) {
+	cfg := config.New()
+
+	// A realistic tool payload: far longer than a reference, and carrying a
+	// secret the caller never meant to persist.
+	payload := `{"tool":"vault.read","token":"` + strings.Repeat("A", cfg.DB.MaxSourceLength) + `-CANARY"}`
+	q := "remember@0 'the deploy key rotated' source:'" + payload + "'"
+
+	got, _, err := query.Parse[string, float32](q, nil, cfg)
+	if !errors.Is(err, query.ErrLimitExceeded) {
+		t.Fatalf("Parse of an origin-sized source err = %v, want ErrLimitExceeded", err)
+	}
+	if got != nil {
+		t.Error("Parse returned a query for a rejected source; nothing must reach the engine")
+	}
+	if strings.Contains(err.Error(), "CANARY") {
+		t.Error("the rejection message quoted the payload back: the error is a second leak channel")
+	}
+
+	// The reference form of the same origin is exactly what should be stored,
+	// and it is well inside the ceiling.
+	ref := "tool://vault.read/call-17"
+	if len(ref) > cfg.DB.MaxSourceLength {
+		t.Fatalf("test premise broken: reference %q is over the ceiling", ref)
+	}
+	if _, _, err := query.Parse[string, float32]("remember@0 'the deploy key rotated' source:'"+ref+"'", nil, cfg); err != nil {
+		t.Errorf("Parse of a reference-sized source err = %v, want nil", err)
+	}
+}
+
+// TestHitMarshalOmitsSourceByDefault pins the compatibility half of
+// provenance: a hit with no source serializes exactly as it did before source
+// existed. omitempty is the mechanism, and this is the test that stops it
+// being dropped — an unsourced fact must not start emitting "source":"" into
+// every /q response.
+func TestHitMarshalOmitsSourceByDefault(t *testing.T) {
+	got := marshalHit(t, nil)
+	if strings.Contains(got, "source") {
+		t.Errorf("Hit JSON = %s, want no source key", got)
+	}
+	want := `{"value":"the parrot is turquoise","timestamp":"2026-01-02T03:04:05Z","score":0.5}`
+	if got != want {
+		t.Errorf("Hit JSON = %s, want %s", got, want)
+	}
+}
+
+// TestHitMarshalSerializesSource is the other side: when the read path did
+// attach provenance, it reaches the client under "source".
+func TestHitMarshalSerializesSource(t *testing.T) {
+	var node graph.Node[string] = graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{
+			Value:     "the parrot is turquoise",
+			Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		},
+		Source: "doc://aviary-log#12",
+	}
+	h := query.Hit[string, float32]{Node: &node, Score: 0.5, Source: "doc://aviary-log#12"}
+
+	out, err := json.Marshal(h)
+	if err != nil {
+		t.Fatalf("Marshal(Hit) = %v, want nil", err)
+	}
+	want := `{"value":"the parrot is turquoise","timestamp":"2026-01-02T03:04:05Z","score":0.5,"source":"doc://aviary-log#12"}`
+	if string(out) != want {
+		t.Errorf("Hit JSON = %s, want %s", out, want)
 	}
 }

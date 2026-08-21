@@ -58,6 +58,14 @@ func (r *Remember[K, P]) SetGraphID(id uint8) {
 // vector: hashing only Value would make `remember@3 'x' topic:a` and
 // `remember@5 'x' topic:b` collide, so the second would reuse the first's plan
 // and write to the wrong graph.
+//
+// Source is one of those fields. It does not change *which* fact is written —
+// Fact.Hash is the fact's text alone — but it changes what is written with it,
+// so leaving it out would let two remembers of the same sentence from two
+// origins share one cached plan: the second call would silently persist the
+// first call's provenance, and the memory would name the wrong origin with no
+// error anywhere. That is the precise failure traceability exists to prevent,
+// so it is fenced by a regression test.
 func (r Remember[K, P]) Hash(h hash.Hasher[K, string]) K {
 	var b strings.Builder
 	b.WriteString("g=")

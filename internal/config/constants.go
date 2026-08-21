@@ -142,6 +142,15 @@ const (
 	// index insert or search can be asked to do.
 	DefaultMaxVectorDimension int = 4096
 
+	// DefaultMaxSourceLength is the ceiling on a remembered fact's provenance
+	// reference. A source is a *reference* to an origin — a URI, a document id,
+	// a tool-call id — not a copy of it: the bound is what keeps that a
+	// structural property rather than a convention, so a caller cannot pipe a
+	// whole tool payload (and whatever credential it happened to contain) into
+	// the graph by writing it into source:. A longer reference is rejected at
+	// parse time, before anything is stored.
+	DefaultMaxSourceLength int = 512
+
 	// DefaultAllowUnanchoredRecall controls whether a recall with no anchor
 	// (entity/topic) is permitted.
 	DefaultAllowUnanchoredRecall bool = false

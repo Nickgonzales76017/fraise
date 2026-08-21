@@ -37,6 +37,13 @@ from fraise_sdk.providers import Embedder, EmbedderLike, resolve_embedder
 DEFAULT_BASE_URL = "http://localhost:9876"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
+# The two query endpoints. They take the same body and run the same pipeline;
+# EXPLAIN_ENDPOINT answers a recall with its scoring evidence and provenance
+# attached, and refuses a write — explaining a ranking must never be able to
+# mutate a graph.
+QUERY_ENDPOINT = "/api/v1/q"
+EXPLAIN_ENDPOINT = "/api/v1/explain"
+
 # Server versions this SDK is verified against. Keep in sync with COMPATIBILITY.md
 # and bump when a release starts relying on newer server behaviour.
 SUPPORTED_SERVER = ">=0.1.0,<0.2.0"
@@ -191,6 +198,14 @@ class FraiseClient:
         ``topics`` and ``entities`` attach the fact to shared hubs so related
         facts become reachable from one another on recall.
 
+        ``source`` records the fact's origin — ``"doc://handbook.pdf#p12"``,
+        ``"session://2026-08-21/call-17"`` — and comes back on an explained
+        recall (see :meth:`recall`). Pass a reference, not the origin's
+        contents: the server bounds its length, so a whole document or tool
+        payload is rejected rather than stored. Unlike a topic or an entity it
+        keeps the case you wrote, because it has to stay resolvable in whatever
+        namespace it points into.
+
         A vector is attached when one is available: an explicit ``vector`` always
         wins; otherwise, if the client has an embedder, ``value`` is encoded
         automatically. ``embed`` overrides that default per call — ``True`` forces
@@ -224,6 +239,7 @@ class FraiseClient:
         depth: int | None = None,
         vector: Sequence[float] | None = None,
         embed: bool | None = None,
+        explain: bool = False,
         timeout: float | None = None,
     ) -> RecallResult:
         """Search ``graph`` for facts and return them ranked by relevance.
@@ -245,43 +261,14 @@ class FraiseClient:
         Any parse warnings the server attached — the query ran, but reads like
         a near-miss of a different one — are listed on the result's
         ``warnings`` and emitted as :class:`FraiseWarning` (see :meth:`query`).
-        """
-        embed_text = query if query is not None else " ".join(keywords)
-        resolved = self._resolve_vector(vector, embed_text, embed)
-        text = _query.build_recall(
-            keywords=list(keywords),
-            graph=graph,
-            query=query,
-            topics=topics,
-            entities=entities,
-            top=top,
-            depth=depth,
-            with_vector=resolved is not None,
-        )
-        parameters = {_query.VECTOR_PARAM: resolved} if resolved is not None else None
-        body = self.query(text, parameters=parameters, timeout=timeout)
-        results = body.get("results") or {}
-        return RecallResult.from_json(results, warnings=body.get("warnings"))
 
-
-    def explain(
-        self,
-        *keywords: str,
-        graph: int = 0,
-        query: str | None = None,
-        topics: Sequence[str] | None = None,
-        entities: Sequence[str] | None = None,
-        top: int | None = None,
-        depth: int | None = None,
-        vector: Sequence[float] | None = None,
-        embed: bool | None = None,
-        timeout: float | None = None,
-    ) -> RecallResult:
-        """Run a recall through ``/api/v1/explain`` and return typed evidence.
-
-        The ranking plan is identical to :meth:`recall`; the server attaches
-        provenance and deterministic contribution records only to this request.
-        ``score`` remains a ranking score, not a calibrated probability.
+        ``explain`` runs the same recall through the server's explain endpoint,
+        which answers with each hit's provenance (``Hit.source``) and the
+        breakdown of how its score was reached (``Hit.contributions``, plus the
+        result's ``background``). The ranking is identical either way — explain
+        adds evidence to the answer, it does not change it — but the payload is
+        larger and its shape is not yet stable, which is why it is opt-in and
+        why the result carries an ``explain_version``.
         """
         embed_text = query if query is not None else " ".join(keywords)
         resolved = self._resolve_vector(vector, embed_text, embed)
@@ -300,7 +287,7 @@ class FraiseClient:
             text,
             parameters=parameters,
             timeout=timeout,
-            _endpoint="explain",
+            endpoint=EXPLAIN_ENDPOINT if explain else QUERY_ENDPOINT,
         )
         results = body.get("results") or {}
         return RecallResult.from_json(results, warnings=body.get("warnings"))
@@ -341,13 +328,18 @@ class FraiseClient:
         *,
         parameters: dict[str, list[float]] | None = None,
         timeout: float | None = None,
-        _endpoint: str = "q",
+        endpoint: str = QUERY_ENDPOINT,
     ) -> dict:
         """Send a raw query string and return the decoded JSON body.
 
         This is the low-level escape hatch behind :meth:`remember` and
         :meth:`recall`; reach for it when you need a query the typed helpers do
         not yet cover. Raises :class:`FraiseAPIError` on any non-2xx response.
+
+        ``endpoint`` selects which query endpoint receives it. Both take the
+        same body; :data:`EXPLAIN_ENDPOINT` answers a recall with its scoring
+        evidence attached and refuses a write, so it is a different *answer* to
+        the same request rather than a different request.
 
         Any ``warnings`` the server attached to a successful response are
         emitted as :class:`FraiseWarning` — every operation funnels through
@@ -365,7 +357,7 @@ class FraiseClient:
         effective_timeout = self.timeout if timeout is None else timeout
         try:
             response = self._session.post(
-                f"{self.base_url}/api/v1/{_endpoint}",
+                f"{self.base_url}{endpoint}",
                 json=payload,
                 timeout=effective_timeout,
             )

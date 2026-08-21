@@ -55,6 +55,7 @@ func TestTokenTypeString(t *testing.T) {
 		{"UNTIL", lexer.UNTIL, "until"},
 		{"TOP", lexer.TOP, "top"},
 		{"DEPTH", lexer.DEPTH, "depth"},
+		{"SOURCE", lexer.SOURCE, "source"},
 		{"VEC", lexer.VEC, "vec"},
 	}
 
@@ -75,7 +76,7 @@ func TestTokenMapCompleteness(t *testing.T) {
 		lexer.PLUS, lexer.TILDE, lexer.MINUS,
 		lexer.COLON, lexer.PHRASE, lexer.LPAREN, lexer.RPAREN, lexer.DOLLAR,
 		lexer.TOPIC, lexer.SINCE, lexer.UNTIL, lexer.TOP, lexer.DEPTH,
-		lexer.VEC,
+		lexer.SOURCE, lexer.VEC,
 	}
 
 	for _, tokenType := range allTokenTypes {
@@ -116,6 +117,7 @@ func TestKeyLITERALsMapLookup(t *testing.T) {
 		{"until", lexer.UNTIL, true},
 		{"top", lexer.TOP, true},
 		{"depth", lexer.DEPTH, true},
+		{"source", lexer.SOURCE, true},
 		{"vec", lexer.VEC, true},
 		{"nonexistent", lexer.ILLEGAL, false},
 		{"RECALL", lexer.ILLEGAL, false},

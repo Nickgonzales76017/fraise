@@ -99,14 +99,22 @@ func (s *Stream[K, P]) Commit(g graph.Graph[K, P]) error {
 		logger.Debug("Committing write stream",
 			"entities", len(remember.Entities),
 			"topics", len(remember.Topics),
+			// The reference itself is not logged: it is caller-supplied data
+			// pointing into a foreign namespace, and provenance is worth
+			// nothing if recording it quietly copies it into the log stream.
+			"sourced", remember.Source != "",
 			"vector", !remember.Vector.Empty())
 
 		fact := graph.Fact[K]{
 			NodeAttributes: graph.NodeAttributes{
 				Value:     remember.Value,
 				Timestamp: time.Now(),
-				Source:    remember.Source,
 			},
+			// Provenance travels with the fact, not beside it: the Put below
+			// replaces the stored fact wholesale, so a source held anywhere
+			// else would have to be re-attached on every re-remember or be
+			// silently lost by one.
+			Source: remember.Source,
 			Hasher: g.GetHasher(),
 		}
 
@@ -212,7 +220,10 @@ func (s *Stream[K, P]) Commit(g graph.Graph[K, P]) error {
 	}
 	if s.Explain {
 		// Explain explains through the anchors, so the payload carries the
-		// query-level background rate alongside each hit's breakdown.
+		// query-level background rate alongside each hit's breakdown, and
+		// names its own shape so a client that recomputes scores can tell
+		// which contract it is reading.
+		r.Explain = ExplainVersion
 		r.Background = background
 	}
 	for i := 0; i < n; i++ {
@@ -226,6 +237,19 @@ func (s *Stream[K, P]) Commit(g graph.Graph[K, P]) error {
 		// graph can turn it into the topic/entity value a client can read.
 		if s.Explain {
 			r.Hits[i].Contributions = resolveContributions(g, contributions[i])
+			// Provenance is read here, under the same lock and for the same
+			// reason. Only a fact carries an origin, so this asks the node
+			// rather than assuming: a node type without provenance simply
+			// answers nothing instead of the read having to know the concrete
+			// types the search can return. The nil check is not defensive
+			// noise — a search may hand back a hit whose node it could not
+			// resolve, and explain must not be the thing that turns that into
+			// a panic.
+			if n := nodes[i]; n != nil {
+				if sourced, ok := (*n).(graph.Sourced); ok {
+					r.Hits[i].Source = sourced.GetSource()
+				}
+			}
 		}
 	}
 

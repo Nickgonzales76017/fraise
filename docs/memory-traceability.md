@@ -19,19 +19,20 @@ client.remember(
 # Routine recall stays lean.
 plain = client.recall("deploys", "approvals", graph=2)
 assert plain.hits[0].source is None
-assert plain.hits[0].contributions == []
+assert plain.hits[0].contributions is None
 
 # Ask for the evidence only at the decision boundary.
-explained = client.explain("deploys", "approvals", graph=2)
+explained = client.recall("deploys", "approvals", graph=2, explain=True)
+assert explained.explain_version == "unstable-1"
 hit = explained.hits[0]
 print(hit.source)          # github:policy/17
 print(hit.score)           # ranking score, not a probability
 for observation in hit.contributions:
-    print(observation.source, observation.score, observation.via)
+    print(observation.channel, observation.score, observation.via)
 ```
 
 A useful agent policy is to use `recall()` during normal context assembly and
-call `explain()` only before a consequential action, when a surprising memory
+set `explain=True` only before a consequential action, when a surprising memory
 wins, or when competing memories disagree. That keeps token cost low while
 retaining a deterministic path from ranked memory back to stored provenance and
 ranking evidence.

@@ -98,3 +98,65 @@ func TestNodeKeysDistinguishTypesOfTheSameText(t *testing.T) {
 		seen[key] = n.name
 	}
 }
+
+// TestFactKeyIgnoresProvenance separates the two identities a traceable memory
+// has. What a fact *is* is its text: remembering one sentence from a contract
+// and again from a call is one memory that two origins support, not two
+// memories that happen to read alike. Folding the origin into the key would
+// split it — two nodes, two sets of anchor edges, a recall that returns the
+// same sentence twice — so provenance is an attribute and Fact.Hash must stay
+// blind to it.
+//
+// Remember.Hash deliberately is *not* blind to it: that hash keys the plan
+// cache, where reusing one origin's write plan for another's would persist the
+// wrong provenance. The two are orthogonal on purpose, and this test is the
+// half that fails loudly if someone "fixes" the asymmetry by making them agree.
+func TestFactKeyIgnoresProvenance(t *testing.T) {
+	const text = "acme moved to annual billing"
+	h := &fakeHasher{}
+
+	fromContract := graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{Value: text},
+		Source:         "doc://contracts/acme-2026.pdf#p4",
+		Hasher:         h,
+	}
+	fromCall := graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{Value: text},
+		Source:         "session://2026-08-21/call-17",
+		Hasher:         h,
+	}
+	unsourced := graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{Value: text},
+		Hasher:         h,
+	}
+
+	if fromContract.Key() != fromCall.Key() {
+		t.Errorf("one fact from two origins produced two keys (%v, %v): the memory would be split in two",
+			fromContract.Key(), fromCall.Key())
+	}
+	if fromContract.Key() != unsourced.Key() {
+		t.Errorf("adding a source changed a fact's key (%v vs %v): every fact stored before provenance existed would become unreachable",
+			fromContract.Key(), unsourced.Key())
+	}
+
+	// The provenance is still readable off the node — Fact satisfies Sourced,
+	// which is how the read path attaches it without knowing concrete types.
+	var node graph.Node[string] = fromContract
+	sourced, ok := node.(graph.Sourced)
+	if !ok {
+		t.Fatal("graph.Fact does not satisfy graph.Sourced: the read path cannot recover provenance")
+	}
+	if want := "doc://contracts/acme-2026.pdf#p4"; sourced.GetSource() != want {
+		t.Errorf("GetSource() = %q, want %q", sourced.GetSource(), want)
+	}
+
+	// A topic reading the same text carries no provenance to recover, and must
+	// not be forced to answer for one.
+	var topic graph.Node[string] = &graph.Topic[string]{
+		NodeAttributes: graph.NodeAttributes{Value: text},
+		Hasher:         h,
+	}
+	if _, ok := topic.(graph.Sourced); ok {
+		t.Error("graph.Topic satisfies Sourced: an anchor the graph derived would report an origin it never had")
+	}
+}

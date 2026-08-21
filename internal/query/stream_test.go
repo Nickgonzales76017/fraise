@@ -50,6 +50,11 @@ type fakeGraph struct {
 	puts             int
 	searchCalled     bool
 
+	// putNodes records what the write path actually stored, so a test can
+	// assert on the fact as committed rather than on the query that asked
+	// for it — provenance is only real once it is on the stored node.
+	putNodes []graph.Node[string]
+
 	searchNodes      []*graph.Node[string]
 	searchScores     []float32
 	searchContribs   [][]graph.Contribution[string, float32]
@@ -66,7 +71,11 @@ func (g *fakeGraph) RUnlock() { g.runlocks++ }
 func (g *fakeGraph) Copy() graph.Graph[string, float32]            { g.copied = true; return g }
 func (g *fakeGraph) MergeFrom(in graph.Graph[string, float32])     { g.merged = true }
 func (g *fakeGraph) Set(node graph.Node[string]) error             { g.sets++; return nil }
-func (g *fakeGraph) Put(key string, node graph.Node[string]) error { g.puts++; return nil }
+func (g *fakeGraph) Put(key string, node graph.Node[string]) error {
+	g.puts++
+	g.putNodes = append(g.putNodes, node)
+	return nil
+}
 
 func (g *fakeGraph) Search(keywords []string, vector containers.Vector[string, float32], topics []string, entities []string, depth int, top int, since time.Time, until time.Time) ([]*graph.Node[string], []float32, [][]graph.Contribution[string, float32], float32) {
 	g.searchCalled = true
@@ -429,6 +438,113 @@ func BenchmarkRememberCommit(b *testing.B) {
 				if err := NewStream[uint64, float32](w).Commit(g); err != nil {
 					b.Fatalf("Commit = %v", err)
 				}
+			}
+		})
+	}
+}
+
+// TestStreamCommitStoresSourceOnTheFact is the write half of traceability: the
+// origin the caller wrote travels onto the stored fact, not just through the
+// query. It is asserted on what Put received because that is the only version
+// of the fact that outlives the request.
+func TestStreamCommitStoresSourceOnTheFact(t *testing.T) {
+	const source = "doc://contracts/Acme-2026.pdf#p4"
+
+	g := &fakeGraph{}
+	s := newStream(&Remember[string, float32]{
+		Value:  "acme moved to annual billing",
+		Topics: []string{"billing"},
+		Source: source,
+	})
+
+	if err := s.Commit(g); err != nil {
+		t.Fatalf("Commit() err = %v", err)
+	}
+	if len(g.putNodes) != 1 {
+		t.Fatalf("write stream stored %d facts, want 1", len(g.putNodes))
+	}
+
+	fact, ok := g.putNodes[0].(graph.Fact[string])
+	if !ok {
+		t.Fatalf("stored node is %T, want graph.Fact", g.putNodes[0])
+	}
+	if fact.Source != source {
+		t.Errorf("stored fact Source = %q, want %q", fact.Source, source)
+	}
+	if fact.GetValue() != "acme moved to annual billing" {
+		t.Errorf("stored fact Value = %q, want the remembered text", fact.GetValue())
+	}
+}
+
+// TestStreamCommitStoresNoSourceWhenUnsourced keeps the absent case honest: a
+// remember without an origin stores a fact with none, rather than one carrying
+// a placeholder a reader could mistake for provenance.
+func TestStreamCommitStoresNoSourceWhenUnsourced(t *testing.T) {
+	g := &fakeGraph{}
+	s := newStream(&Remember[string, float32]{Value: "acme moved to annual billing"})
+
+	if err := s.Commit(g); err != nil {
+		t.Fatalf("Commit() err = %v", err)
+	}
+	if len(g.putNodes) != 1 {
+		t.Fatalf("write stream stored %d facts, want 1", len(g.putNodes))
+	}
+	if src := g.putNodes[0].(graph.Fact[string]).Source; src != "" {
+		t.Errorf("stored fact Source = %q, want empty", src)
+	}
+}
+
+// TestStreamCommitExplainAttachesSource is the read half, and it is the same
+// switch the contributions ride: provenance reaches the caller under explain
+// and stays off the ordinary response, so /q's shape is unchanged. It also
+// pins the envelope version, which is what tells a client whose explain
+// payload this is.
+func TestStreamCommitExplainAttachesSource(t *testing.T) {
+	const source = "session://2026-08-21/call-17"
+
+	// Two hits: one remembered with an origin, one without. A fact stored
+	// before provenance existed must explain cleanly rather than force an
+	// invented source onto the payload.
+	var sourced graph.Node[string] = graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{Value: "acme moved to annual billing"},
+		Source:         source,
+	}
+	var unsourced graph.Node[string] = graph.Fact[string]{
+		NodeAttributes: graph.NodeAttributes{Value: "acme signed with okta"},
+	}
+
+	for _, explain := range []bool{true, false} {
+		t.Run(fmt.Sprintf("explain=%v", explain), func(t *testing.T) {
+			g := &fakeGraph{
+				searchNodes:    []*graph.Node[string]{&sourced, &unsourced},
+				searchScores:   []float32{0.9, 0.8},
+				searchContribs: [][]graph.Contribution[string, float32]{{}, {}},
+			}
+			s := newStream(readQuery())
+			s.Explain = explain
+
+			if err := s.Commit(g); err != nil {
+				t.Fatalf("Commit() err = %v", err)
+			}
+
+			wantFirst := ""
+			if explain {
+				wantFirst = source
+			}
+			if got := s.Result.Hits[0].Source; got != wantFirst {
+				t.Errorf("Hits[0].Source = %q with explain=%v, want %q", got, explain, wantFirst)
+			}
+			// The unsourced fact stays unsourced in either mode.
+			if got := s.Result.Hits[1].Source; got != "" {
+				t.Errorf("Hits[1].Source = %q, want empty for a fact stored without an origin", got)
+			}
+
+			wantVersion := ""
+			if explain {
+				wantVersion = ExplainVersion
+			}
+			if s.Result.Explain != wantVersion {
+				t.Errorf("Result.Explain = %q with explain=%v, want %q", s.Result.Explain, explain, wantVersion)
 			}
 		})
 	}

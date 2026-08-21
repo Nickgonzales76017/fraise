@@ -54,9 +54,26 @@ type QueryContext struct {
 	GraphID uint8
 }
 
+// ExplainVersion names the shape of the explain payload. It is deliberately
+// not a semantic version: the explain envelope is a debugging surface, not yet
+// a stability commitment, and the "unstable-" prefix is the commitment — a
+// client that pins on it is told, in the payload it is reading, that the shape
+// may change under it. The scoring arithmetic underneath is not unstable: the
+// fold a client recomputes from these fields is the shipped one, and it is
+// fenced by a regression test. Bump this string whenever a field's meaning,
+// name or presence changes.
+const ExplainVersion = "unstable-1"
+
 type QueryResult[K comparable, P float32 | float64] struct {
 	Count int         `json:"count"`
 	Hits  []Hit[K, P] `json:"hits"`
+
+	// Explain names the version of the explain envelope, attached only in
+	// explain mode. It is the first thing a consumer should read: without it,
+	// a client that recomputes scores has no way to tell a payload it
+	// understands from one whose fields were redefined. omitempty keeps it,
+	// like Background, out of an ordinary query's response.
+	Explain string `json:"explain_version,omitempty"`
 
 	// Background is the query's background rate ρ₀ — the average seed mass
 	// per unit of anchor degree the traversal observed — attached only in
@@ -69,6 +86,17 @@ type QueryResult[K comparable, P float32 | float64] struct {
 type Hit[K comparable, P float32 | float64] struct {
 	Node  *graph.Node[K]
 	Score P
+
+	// Source is the hit's provenance — the reference recorded with the fact
+	// when it was remembered — populated only in explain mode, and empty for
+	// a fact stored without one. It answers the other half of traceability
+	// from the other end: Contributions say why this fact surfaced, Source
+	// says where it came from.
+	//
+	// It is read off the node at the commit site rather than resolved later,
+	// for the same reason contributions are: the node is only safely readable
+	// under the graph lock.
+	Source string
 
 	// Contributions is the hit's per-source breakdown, populated only when
 	// the stream ran in explain mode; nil otherwise. nil doubles as the
@@ -99,15 +127,12 @@ type HitContribution[P float32 | float64] struct {
 
 // MarshalJSON flattens the node into the hit so the response carries only the
 // value, timestamp and score, with no nested Node object. The contribution
-// breakdown appears only when the hit carries one (explain mode), keeping the
-// ordinary query response byte-compatible with what it was before explain
-// existed.
+// breakdown and the provenance reference appear only when the hit carries one
+// (explain mode), keeping the ordinary query response byte-compatible with
+// what it was before explain and source existed — omitempty is what enforces
+// that, and an e2e test asserts /q still emits neither key.
 func (h Hit[K, P]) MarshalJSON() ([]byte, error) {
 	node := *h.Node
-	source := ""
-	if h.Contributions != nil {
-		source = node.GetAttributes().Source
-	}
 
 	return json.Marshal(struct {
 		Value         string               `json:"value"`
@@ -119,7 +144,7 @@ func (h Hit[K, P]) MarshalJSON() ([]byte, error) {
 		Value:         node.GetValue(),
 		Timestamp:     node.GetTimestamp(),
 		Score:         h.Score,
-		Source:        source,
+		Source:        h.Source,
 		Contributions: h.Contributions,
 	})
 }
@@ -159,6 +184,17 @@ func Parse[K comparable, P float32 | float64](q string, params map[string][]P, c
 
 	switch n := cmd.(type) {
 	case *parser.RememberCommandNode[P]:
+		// Bound the provenance reference before anything is stored. A source
+		// is a reference to an origin, not a copy of it: rejecting an
+		// over-long one here is what stops a caller pasting a whole document
+		// or tool payload — and whatever it happened to contain — into the
+		// graph through source:.
+		if src := n.Source(); len(src) > c.DB.MaxSourceLength {
+			logger.Warn("Rejecting remember over source ceiling", "length", len(src), "max", c.DB.MaxSourceLength)
+			return nil, nil, fmt.Errorf("%w: source is %d bytes, max %d — record a reference to the origin, not the origin",
+				ErrLimitExceeded, len(src), c.DB.MaxSourceLength)
+		}
+
 		qo := &Remember[K, P]{
 			Value:    n.Value(),
 			Entities: n.Entities(),
@@ -178,7 +214,7 @@ func Parse[K comparable, P float32 | float64](q string, params map[string][]P, c
 			qo.Vector = containers.NewVector[K](data)
 		}
 
-		logger.Debug("Parsed remember query", "graph", qo.GetGraphID(), "value", qo.Value)
+		logger.Debug("Parsed remember query", "graph", qo.GetGraphID(), "value", qo.Value, "sourced", qo.Source != "")
 
 		return qo, warns, nil
 

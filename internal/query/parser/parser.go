@@ -150,7 +150,6 @@ func (p *parser[K, P]) parseRemember() (*RememberCommandNode[P], error) {
 	r.value = *phrase
 
 	var anchors []AnchorFieldNode
-	sourceSeen := false
 
 	for p.cur.Type != lexer.EOL {
 		switch p.cur.Type {
@@ -168,21 +167,18 @@ func (p *parser[K, P]) parseRemember() (*RememberCommandNode[P], error) {
 			anchors = append(anchors, AnchorFieldNode{field: field})
 			r.anchors = anchors
 		case lexer.SOURCE:
-			if sourceSeen {
-				return nil, p.errf(p.cur.Pos, "duplicate source field")
+			// A fact has one origin. A second source: clause is rejected
+			// rather than resolved by precedence: either reading (first wins,
+			// last wins) silently discards a provenance the caller wrote, and
+			// a dropped origin is exactly what this feature exists to prevent.
+			if r.source != nil {
+				return nil, p.errf(p.cur.Pos, "duplicate source clause: a fact carries one origin")
 			}
-			sourceSeen = true
-			key := p.cur
-			p.next()
-			if _, err := p.expect(lexer.COLON); err != nil {
-				return nil, p.errf(p.cur.Pos, "Expected colon, but found %q", p.cur.Literal)
-			}
-			tok, err := p.expectValue()
+			key, value, err := p.parseSourceField()
 			if err != nil {
 				return nil, err
 			}
-			anchors = append(anchors, AnchorFieldNode{field: SourceFieldNode{key: key, value: tok.Literal}})
-			r.anchors = anchors
+			r.source = &SourceFieldNode{key: key, value: value, pos: key.Pos}
 		case lexer.VEC:
 			vec, err := p.parseVecField()
 			if err != nil {
@@ -195,6 +191,35 @@ func (p *parser[K, P]) parseRemember() (*RememberCommandNode[P], error) {
 	}
 
 	return &r, nil
+}
+
+// parseSourceField reads a `source:<ref>` clause: the fact's provenance.
+//
+// Two things separate it from parseAnchorField. The value keeps the case it
+// was written with, because a source is a reference into a foreign namespace
+// (a URI, a document id, a tool-call id) rather than an anchor the graph
+// deduplicates — folding it would store a reference that no longer resolves.
+// And an empty reference is rejected: `source:''` would record "this fact has
+// a provenance" while carrying none, which reads as traceable and is not.
+func (p *parser[K, P]) parseSourceField() (lexer.Token, string, error) {
+	key := p.cur
+
+	p.next()
+
+	if _, err := p.expect(lexer.COLON); err != nil {
+		return lexer.Token{}, "", p.errf(p.cur.Pos, "Expected colon, but found %q", p.cur.Literal)
+	}
+
+	tok, err := p.expectValue()
+	if err != nil {
+		return lexer.Token{}, "", err
+	}
+
+	if strings.TrimSpace(tok.Literal) == "" {
+		return lexer.Token{}, "", p.errf(tok.Pos, "source must not be empty: drop the clause if the fact has no recorded origin")
+	}
+
+	return key, tok.Literal, nil
 }
 
 func (p *parser[K, P]) parseRecall() (*RecallCommandNode[K, P], error) {

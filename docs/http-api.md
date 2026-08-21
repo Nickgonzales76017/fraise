@@ -67,15 +67,18 @@ change the plan-cache identity. Each hit may add two forms of evidence:
 - `contributions`: deterministic observations from `text`, `vector`, or `graph`
   that produced the ranking.
 
-The query-level `background` field is included when graph surplus contributes.
+The query-level `explain_version` is currently `unstable-1`; consumers must
+check it before interpreting the evidence fields. `background` is included
+when graph surplus contributes.
 A graph contribution can include `via` (the funding topic/entity), `degree`, and
 `count`; the current wire format does **not** use the old hop field.
 
 ```json
 {
-  "results": {
-    "count": 1,
-    "background": 0.125,
+      "results": {
+        "count": 1,
+        "explain_version": "unstable-1",
+        "background": 0.125,
     "hits": [
       {
         "value": "deploys require two approvals",
@@ -96,8 +99,12 @@ A graph contribution can include `via` (the funding topic/entity), `degree`, and
 `score` is a deterministic ranking score, **not a calibrated probability**.
 Consumers that need confidence should inspect the provenance and contribution
 structure, compare competing hits, and apply their own decision threshold.
-Ordinary `/q` deliberately omits `source`, `contributions`, and `background` so
-routine agent recalls keep their small response shape.
+Ordinary `/q` deliberately omits `source`, `contributions`, `explain_version`,
+and `background` so routine agent recalls keep their small response shape.
+
+`source` accepts a reference of at most 512 UTF-8 bytes by default. Oversized
+origin payloads are rejected before execution, and neither the rejected value
+nor its contents are copied into the error or provenance log fields.
 
 A `remember` on this endpoint is rejected with 400: explanation is read-only.
 

@@ -62,9 +62,9 @@ func TestRememberHash(t *testing.T) {
 	}
 	h := &fakeHasher{}
 
-	// Hash folds in graph, value, the delimited entity/topic lists and the
-	// bound vector so writes that differ in any of those get distinct cache
-	// keys.
+	// Hash folds in graph, value, the delimited entity/topic lists and the bound
+	// vector. A non-empty provenance reference adds its own tagged segment;
+	// omitting that segment here preserves the cache identity of legacy writes.
 	const want = "g=2|v=hello world|en=alice|to=greeting|vec=H(0x1p-01)"
 	if got := r.Hash(h); got != "H("+want+")" {
 		t.Errorf("Hash() = %q, want %q", got, "H("+want+")")
@@ -75,9 +75,9 @@ func TestRememberHash(t *testing.T) {
 }
 
 // TestRememberHashDistinguishesGraphAndTags is the real contract: writes that
-// differ only in graph, entities, topics or the bound vector must not share a
-// cache key, or the engine reuses a stale plan and writes to the wrong
-// graph/tags (or with the wrong embedding).
+// differ only in graph, entities, topics, provenance or the bound vector must
+// not share a cache key, or the engine reuses a stale plan and writes to the
+// wrong graph/tags (or with the wrong embedding, or the wrong origin).
 func TestRememberHashDistinguishesGraphAndTags(t *testing.T) {
 	base := func() Remember[string, float32] {
 		return Remember[string, float32]{Value: "the parrot is turquoise"}
@@ -87,6 +87,7 @@ func TestRememberHashDistinguishesGraphAndTags(t *testing.T) {
 		"graph":  func() Remember[string, float32] { r := base(); r.context.GraphID = 5; return r }(),
 		"topic":  func() Remember[string, float32] { r := base(); r.Topics = []string{"birds"}; return r }(),
 		"entity": func() Remember[string, float32] { r := base(); r.Entities = []string{"polly"}; return r }(),
+		"source": func() Remember[string, float32] { r := base(); r.Source = "doc://aviary-log#12"; return r }(),
 		"vector-a": func() Remember[string, float32] {
 			r := base()
 			r.Vector = containers.NewVector[string]([]float32{1, 0})
@@ -106,6 +107,32 @@ func TestRememberHashDistinguishesGraphAndTags(t *testing.T) {
 			t.Errorf("hash collision: %q and %q both produced %q", name, other, key)
 		}
 		seen[key] = name
+	}
+}
+
+// TestRememberHashSeparatesSourcesOfOneFact is the provenance regression, and
+// it is the case the two hashes are easiest to confuse. The *fact* is
+// content-addressed by its text, so remembering one sentence from two origins
+// is deliberately one node — but the two *writes* are different writes, and
+// the plan cache keys on this hash. Were Source left out, the second remember
+// would hit the first's cached plan and persist the first's origin: the graph
+// would then name the contract as the source of something the call said, with
+// no error raised anywhere. A traceability feature that silently records the
+// wrong origin is worse than one that records none.
+func TestRememberHashSeparatesSourcesOfOneFact(t *testing.T) {
+	const fact = "acme moved to annual billing"
+
+	fromContract := Remember[string, float32]{Value: fact, Source: "doc://contracts/acme-2026.pdf#p4"}
+	fromCall := Remember[string, float32]{Value: fact, Source: "session://2026-08-21/call-17"}
+	unsourced := Remember[string, float32]{Value: fact}
+
+	contract, call, none := fromContract.Hash(&fakeHasher{}), fromCall.Hash(&fakeHasher{}), unsourced.Hash(&fakeHasher{})
+
+	if contract == call {
+		t.Errorf("two origins of one fact share a plan-cache key (%q): the second write would persist the first's provenance", contract)
+	}
+	if contract == none || call == none {
+		t.Error("a sourced remember shares a plan-cache key with an unsourced one: the cached plan would write the wrong provenance")
 	}
 }
 

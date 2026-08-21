@@ -738,3 +738,184 @@ func TestValuesFoldToLowerCase(t *testing.T) {
 		}
 	})
 }
+
+// TestRememberSourceParses covers the provenance clause across the shapes a
+// caller actually writes an origin in: a bare reference, a quoted one with
+// whitespace, and one whose punctuation (`://`, `#`, `:`) collides with the
+// grammar's own separators. All three round-trip through String(), which
+// re-quotes the reference — the reconstruction is FQL, not the original
+// spelling, so a bare source comes back quoted.
+func TestRememberSourceParses(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"bare reference", "remember@1 'acme moved to annual billing' source:contract-2026", "contract-2026"},
+		{"quoted reference", "remember 'acme moved to annual billing' source:'Q3 review call'", "Q3 review call"},
+		{"uri with grammar punctuation", "remember 'acme moved to annual billing' source:'doc://contracts/Acme-2026.pdf#p4'", "doc://contracts/Acme-2026.pdf#p4"},
+		{"tool call id", "remember 'the parrot is turquoise' topic:birds source:'tool://vision.describe/call-17'", "tool://vision.describe/call-17"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, _, err := parser.Parse[uint64, float32](tc.query)
+			if err != nil {
+				t.Fatalf("Parse(%q) err = %v, want nil", tc.query, err)
+			}
+			r, ok := cmd.(*parser.RememberCommandNode[float32])
+			if !ok {
+				t.Fatalf("Parse(%q) = %T, want *parser.RememberCommandNode", tc.query, cmd)
+			}
+			if !r.HasSource() {
+				t.Fatal("HasSource() = false on a query carrying source:")
+			}
+			if got := r.Source(); got != tc.want {
+				t.Errorf("Source() = %q, want %q", got, tc.want)
+			}
+			// The reconstruction must be re-parsable and mean the same thing:
+			// a source that survives one round trip but not two is a source
+			// the engine cannot be trusted to have stored.
+			again, _, err := parser.Parse[uint64, float32](r.String())
+			if err != nil {
+				t.Fatalf("re-parsing String() %q err = %v", r.String(), err)
+			}
+			if got := again.(*parser.RememberCommandNode[float32]).Source(); got != tc.want {
+				t.Errorf("Source() after round trip = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRememberSourceKeepsItsCase is the counterpart to
+// TestValuesFoldToLowerCase. Anchors fold because they are identities the
+// graph deduplicates; a source does not, because it is a reference into
+// someone else's namespace — a lower-cased URI or document id is a reference
+// that no longer resolves, which is a traceability failure that looks like
+// success.
+func TestRememberSourceKeepsItsCase(t *testing.T) {
+	const q = "remember 'acme moved to annual billing' topic:Billing source:'doc://Contracts/Acme-2026.PDF'"
+
+	cmd, _, err := parser.Parse[uint64, float32](q)
+	if err != nil {
+		t.Fatalf("Parse(%q) err = %v, want nil", q, err)
+	}
+	r := cmd.(*parser.RememberCommandNode[float32])
+
+	if want := "doc://Contracts/Acme-2026.PDF"; r.Source() != want {
+		t.Errorf("Source() = %q, want %q — a source is a reference, not an anchor", r.Source(), want)
+	}
+	// The anchor beside it still folds, so this is the two rules coexisting
+	// rather than case-folding having been switched off.
+	if want := []string{"billing"}; !slices.Equal(r.Topics(), want) {
+		t.Errorf("Topics() = %v, want %v — anchors still fold", r.Topics(), want)
+	}
+}
+
+// TestRememberSourceErrors pins the two provenance readings that must fail
+// rather than be resolved silently: a second origin for one fact (either
+// precedence rule discards something the caller wrote) and an empty one (a
+// fact that claims a provenance while carrying none reads as traceable and is
+// not).
+func TestRememberSourceErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"duplicate source", "remember 'a fact' source:a source:b"},
+		{"empty source", "remember 'a fact' source:''"},
+		{"blank source", "remember 'a fact' source:'   '"},
+		{"source without value", "remember 'a fact' source:"},
+		{"source without colon", "remember 'a fact' source contract"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := parser.Parse[uint64, float32](tc.query); err == nil {
+				t.Errorf("Parse(%q) err = nil, want a parse error", tc.query)
+			}
+		})
+	}
+}
+
+// TestRememberWithoutSourceReportsNone keeps the absent case unambiguous: no
+// clause means no provenance, not an empty one, and the query is unchanged
+// from what it parsed to before source existed.
+func TestRememberWithoutSourceReportsNone(t *testing.T) {
+	const q = "remember@1 'anne loves the color orange' topic:color entity:anne"
+
+	cmd, _, err := parser.Parse[uint64, float32](q)
+	if err != nil {
+		t.Fatalf("Parse(%q) err = %v, want nil", q, err)
+	}
+	r := cmd.(*parser.RememberCommandNode[float32])
+
+	if r.HasSource() {
+		t.Error("HasSource() = true on a query with no source clause")
+	}
+	if got := r.Source(); got != "" {
+		t.Errorf("Source() = %q, want the empty string", got)
+	}
+	if r.String() != q {
+		t.Errorf("String() = %q, want the original %q — source must not appear when absent", r.String(), q)
+	}
+}
+
+// TestSourceStaysDataInValuePosition follows the rule the grammar already
+// applies to every other keyword: spelling alone must not make a word syntax.
+// "source" is now reserved, so a fact *about* a source, or an anchor named
+// one, has to keep working unquoted in value position.
+func TestSourceStaysDataInValuePosition(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		check func(t *testing.T, cmd parser.CommandNode)
+	}{
+		{
+			name:  "source as a topic value",
+			query: "remember 'the leak was traced' topic:source",
+			check: func(t *testing.T, cmd parser.CommandNode) {
+				r := cmd.(*parser.RememberCommandNode[float32])
+				if want := []string{"source"}; !slices.Equal(r.Topics(), want) {
+					t.Errorf("Topics() = %v, want %v", r.Topics(), want)
+				}
+				if r.HasSource() {
+					t.Error("topic:source was read as a provenance clause")
+				}
+			},
+		},
+		{
+			name:  "source as a recall term",
+			query: "recall source",
+			check: func(t *testing.T, cmd parser.CommandNode) {
+				r := cmd.(*parser.RecallCommandNode[uint64, float32])
+				if want := []string{"source"}; !slices.Equal(r.Terms(), want) {
+					t.Errorf("Terms() = %v, want %v", r.Terms(), want)
+				}
+			},
+		},
+		{
+			name:  "source inside a remembered phrase",
+			query: "remember 'check the source: it was the log' topic:debugging",
+			check: func(t *testing.T, cmd parser.CommandNode) {
+				r := cmd.(*parser.RememberCommandNode[float32])
+				if want := "check the source: it was the log"; r.Value() != want {
+					t.Errorf("Value() = %q, want %q", r.Value(), want)
+				}
+				if r.HasSource() {
+					t.Error("a phrase containing 'source:' was read as a provenance clause")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, _, err := parser.Parse[uint64, float32](tc.query)
+			if err != nil {
+				t.Fatalf("Parse(%q) err = %v, want nil", tc.query, err)
+			}
+			tc.check(t, cmd)
+		})
+	}
+}

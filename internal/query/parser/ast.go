@@ -179,6 +179,7 @@ type RememberCommandNode[P float32 | float64] struct {
 	selector GraphSelectorNode
 	value    PhraseNode
 	anchors  []AnchorFieldNode
+	source   *SourceFieldNode
 	vec      *VecFieldNode[P]
 	pos      lexer.Position
 	end      lexer.Position
@@ -210,6 +211,27 @@ func (r RememberCommandNode[P]) Topics() []string {
 	}
 
 	return res
+}
+
+// Source reports the fact's provenance reference — the origin the caller wrote
+// under `source:` — or the empty string when the remember carried no source
+// clause. It is deliberately not folded to lower case: unlike a topic or an
+// entity a source is not an anchor the graph deduplicates, it is a reference
+// into a foreign namespace (a URI, a document id, a tool-call id) where case
+// is significant, and folding would hand back a reference that no longer
+// resolves.
+func (r RememberCommandNode[P]) Source() string {
+	if r.source == nil {
+		return ""
+	}
+	return r.source.Value()
+}
+
+// HasSource reports whether the remember carried an explicit source clause, as
+// opposed to an empty provenance. An empty `source:''` is rejected at parse
+// time, so the two cannot be confused.
+func (r RememberCommandNode[P]) HasSource() bool {
+	return r.source != nil
 }
 
 func (r RememberCommandNode[P]) Vector() []P {
@@ -276,6 +298,17 @@ type TopicFieldNode struct {
 	end   lexer.Position
 }
 
+// Source field. It carries a remember's provenance reference: where the fact
+// came from. Unlike an entity or a topic it never becomes a node — provenance
+// is an attribute of the fact, not another anchor to traverse — so it is held
+// on the command rather than in the anchor list.
+type SourceFieldNode struct {
+	key   lexer.Token
+	value string
+	pos   lexer.Position
+	end   lexer.Position
+}
+
 // Since field
 type SinceFieldNode[K comparable] struct {
 	key   lexer.Token
@@ -336,6 +369,11 @@ func (n RememberCommandNode[P]) String() string {
 	// anchors
 	for _, e := range n.anchors {
 		s = append(s, e.String())
+	}
+
+	// source
+	if n.source != nil {
+		s = append(s, n.source.String())
 	}
 
 	// vec
@@ -684,6 +722,32 @@ func (n DepthFieldNode) Pos() lexer.Position {
 }
 
 func (n DepthFieldNode) End() lexer.Position {
+	return n.end
+}
+
+// source field node impl
+
+// String reconstructs the clause as valid FQL: the reference is re-quoted
+// because a source may legally contain the whitespace and punctuation a bare
+// token may not, and an inner apostrophe is re-escaped ('') the same way a
+// remembered phrase is.
+func (n SourceFieldNode) String() string {
+	return fmt.Sprintf("%s:'%s'", n.key.Literal, strings.ReplaceAll(n.value, "'", "''"))
+}
+
+func (n SourceFieldNode) Key() string {
+	return n.key.Literal
+}
+
+func (n SourceFieldNode) Value() string {
+	return n.value
+}
+
+func (n SourceFieldNode) Pos() lexer.Position {
+	return n.pos
+}
+
+func (n SourceFieldNode) End() lexer.Position {
 	return n.end
 }
 
